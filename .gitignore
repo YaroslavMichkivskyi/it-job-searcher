@@ -1,0 +1,2 @@
+# Python caches; search state (budgets, locks, cache) lives outside the module
+__pycache__/

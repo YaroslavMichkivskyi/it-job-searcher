@@ -1,0 +1,4 @@
+# LF in the repo for every OS; Windows batch files need CRLF
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf

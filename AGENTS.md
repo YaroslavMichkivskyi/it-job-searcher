@@ -1,3 +1,9 @@
+---
+kind: daemon
+when: collect a full list of IT vacancies with descriptions from one platform (dou, djinni or linkedin) into a career/searches/ session — scripts only: run them directly, no subagent
+works-for: domains/career/
+---
+
 # it-job-searcher — collects IT vacancies from one job platform
 
 Collectors that gather, as completely as possible, every vacancy on **one**
