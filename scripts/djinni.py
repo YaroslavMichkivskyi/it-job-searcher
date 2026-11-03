@@ -19,7 +19,7 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # find common.py from any cwd
-from common import PoliteClient, Stop, clean, exp_range, record, run_collector
+from common import PoliteClient, Stop, clean, exp_range, record, run_collector, seen_ids
 
 BASE = "https://djinni.co/jobs/"
 PAGE_SIZE = 15
@@ -108,6 +108,8 @@ def main() -> int:
     ap.add_argument("--lang", default="ru", choices=("ru", "uk", "en"), help="language of the .md report")
     ap.add_argument("--max-pages", type=int, default=20, help="listing pages, ~15 vacancies each (default 20)")
     ap.add_argument("--ignore-gap", action="store_true", help="skip the pause-between-runs check (only on the user's request)")
+    ap.add_argument("--only-new", action="store_true",
+                    help="skip vacancies already collected in earlier sessions; stop paging at a page with nothing new")
     args = ap.parse_args()
 
     query = {"years": args.years, "experience_range": exp_range(args.years, args.max_exp),
@@ -125,13 +127,20 @@ def main() -> int:
 
     def collect(budget, log, records):
         client = PoliteClient("djinni", budget, log)
+        seen = seen_ids("djinni") if args.only_new else None
+        if seen is not None:
+            log(f"only-new: {len(seen)} Djinni vacancies known from earlier sessions")
         for n in range(1, args.max_pages + 1):
             page = client.request(BASE + "?" + urllib.parse.urlencode(params + ([("page", n)] if n > 1 else [])))
             items = parse_page(page, log)
             log(f"page {n}: {len(items)} vacancies")
-            for it in items:
+            fresh = [it for it in items if seen is None or it["source_id"] not in seen]
+            for it in fresh:
                 if it["source_id"] not in records:
                     records[it["source_id"]] = to_record(it)
+            if seen is not None and items and not fresh:
+                log(f"page {n}: nothing new — the rest was collected in earlier runs")
+                break
             # Next page exists if the site links it — or, should the pager markup
             # change, if this page was full. An empty page ends the loop either way.
             if not items or (f"page={n + 1}" not in page and len(items) < PAGE_SIZE):

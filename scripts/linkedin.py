@@ -26,7 +26,8 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # find common.py from any cwd
-from common import REPO, STATE, Cache, McpClient, Pacer, Stop, exp_range, parse_salary, record, run_collector
+from common import (REPO, STATE, Budget, Cache, McpClient, Pacer, Stop, exp_range, parse_salary, pending_ids,
+                    record, run_collector, seen_ids)
 
 # `experience_level` values of the server's `search_jobs`, by years of experience.
 LEVELS = [((0, 1), ["internship", "entry"]), ((1, 3), ["entry", "associate"]),
@@ -101,7 +102,8 @@ def main() -> int:
     ap.add_argument("--location", action="append", help="LinkedIn location, repeatable, e.g. 'European Union', "
                                                          "'Ukraine' (without it LinkedIn uses the account's country)")
     ap.add_argument("--remote", action="store_true", help="remote vacancies only")
-    ap.add_argument("--date-posted", choices=("past_24_hours", "past_week", "past_month"), default="past_month")
+    ap.add_argument("--date-posted", choices=("auto", "past_24_hours", "past_week", "past_month"), default="past_month",
+                    help="auto: past_24_hours if the last LinkedIn run ended < 23.5 h ago, else past_week")
     ap.add_argument("--pages-per-keyword", type=int, default=2, help="search result pages per phrase (default 2)")
     ap.add_argument("--max-details", type=int, default=35, help="max job pages to open (default 35)")
     ap.add_argument("--cache-days", type=float, default=7)
@@ -109,8 +111,13 @@ def main() -> int:
     ap.add_argument("--out", help="session folder (default <JOB_SEARCH_DIR>/<date>-linkedin)")
     ap.add_argument("--lang", default="ru", choices=("ru", "uk", "en"), help="language of the .md report")
     ap.add_argument("--ignore-gap", action="store_true", help="skip the pause-between-runs check (only on the user's request)")
+    ap.add_argument("--only-new", action="store_true",
+                    help="skip vacancies already collected in earlier sessions (no detail call, not in the report)")
     args = ap.parse_args()
 
+    if args.date_posted == "auto":
+        mins = Budget("linkedin").minutes_since_last_run()
+        args.date_posted = "past_24_hours" if mins is not None and mins < 23.5 * 60 else "past_week"
     levels = levels_for(args.years, args.max_exp)
     query = {"years": args.years, "experience_range": exp_range(args.years, args.max_exp), "experience_levels": levels,
              "keywords": args.keyword, "locations": args.location, "remote": args.remote,
@@ -120,6 +127,9 @@ def main() -> int:
         pacer, cache = Pacer("linkedin", log), Cache("linkedin", args.cache_days)
         client = McpClient(server_command(args.server_cmd), log)
         titles: dict[str, str] = {}
+        seen = seen_ids("linkedin") if args.only_new else None
+        if seen is not None:
+            log(f"only-new: {len(seen)} LinkedIn vacancies known from earlier sessions")
         try:
             searches = [(kw, loc) for kw in args.keyword for loc in (args.location or [None])]
             for kw, loc in searches:
@@ -151,11 +161,23 @@ def main() -> int:
                 if ids and len(untitled) > len(ids) // 2:
                     log.warn(f"'{kw}': {len(untitled)} of {len(ids)} ids came without a title — search format "
                              f"changed? raw response in .state/debug/linkedin-last-search.json")
+                if seen is not None:
+                    fresh = [i for i in ids if i not in seen]
+                    log(f"'{kw}': {len(ids) - len(fresh)} known ones skipped, {len(fresh)} new")
+                    ids = fresh
                 for i in ids:
                     records.setdefault(i, record(platform="linkedin", source_id=i,
                                                  url=f"https://www.linkedin.com/jobs/view/{i}/",
                                                  title=titles.get(i), description_complete=False,
                                                  notes=f"search: {kw} @ {loc or '-'}"))
+            if seen is not None:
+                backlog = sorted(pending_ids("linkedin") - set(records), reverse=True)  # newest ids first
+                if backlog:
+                    log(f"only-new: {len(backlog)} listed earlier but never opened — retried")
+                for i in backlog:
+                    records.setdefault(i, record(platform="linkedin", source_id=i,
+                                                 url=f"https://www.linkedin.com/jobs/view/{i}/",
+                                                 description_complete=False, notes="backlog from an earlier run"))
             opened = 0
             for i, rec in records.items():
                 data = cache.get(i)

@@ -43,7 +43,7 @@ POLICY = {
     "dou": dict(delay=(4.0, 9.0), breather_every=15, breather=(25.0, 45.0),
                 daily_requests=300, min_gap_minutes=30),
     "djinni": dict(delay=(4.0, 9.0), breather_every=15, breather=(25.0, 45.0),
-                   daily_requests=200, min_gap_minutes=30),
+                   daily_requests=200, min_gap_minutes=5),
     # LinkedIn runs on the user's logged-in account: the strictest limits,
     # the account is what gets restricted. Counted in page loads.
     "linkedin": dict(delay=(8.0, 20.0), breather_every=10, breather=(45.0, 90.0),
@@ -408,11 +408,14 @@ def parse_salary(text: str | None) -> tuple[int | None, int | None, str | None]:
     nums = []
     for num, k in raw:
         digits = re.sub(r"[  ,]", "", num).rstrip(".")
+        if re.fullmatch(r"\d{1,3}(\.\d{3})+", digits):  # '80.000' — dot as thousands separator
+            digits = digits.replace(".", "")
         if not digits or not re.fullmatch(r"\d+(\.\d+)?", digits):
             continue
         value = float(digits) * (1000 if k else 1)
         nums.append(int(value))
-    if any(s in low for s in ("/yr", "per year", "/year", "на рік", "в год")):
+    yearly = any(s in low for s in ("/yr", "per year", "/year", "на рік", "в год"))
+    if yearly or (cur in ("USD", "EUR") and nums and min(nums) >= 20000):  # 80.000€ — no monthly IT pay that high
         nums = [n // 12 for n in nums]  # yearly → monthly
     if not nums:
         return None, None, cur
@@ -454,6 +457,37 @@ def session_dir(out: str | None, label: str) -> Path:
     path = Path(out).resolve() if out else SEARCHES / f"{date.today().isoformat()}-{slug(label)}"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def pending_ids(platform: str, days: float = 7) -> set[str]:
+    """Ids of `platform` listed in a session of the last `days` days but never
+    fetched in full (detail budget ran out) — `--only-new` retries them directly,
+    so a narrow date filter doesn't lose yesterday's backlog."""
+    cutoff, done, pending = time.time() - days * 86400, seen_ids(platform), set()
+    for f in SEARCHES.glob(f"*/*_{platform}.json"):
+        if f.stat().st_mtime < cutoff:
+            continue
+        try:
+            pending.update(str(r.get("source_id")) for r in json.loads(f.read_text("utf-8")).get("records", [])
+                           if not r.get("description_complete"))
+        except (ValueError, OSError):
+            continue
+    return pending - done
+
+
+def seen_ids(platform: str) -> set[str]:
+    """Source ids of `platform` fully collected (description fetched) in any
+    earlier session (`<JOB_SEARCH_DIR>/*/*_<platform>.json`) — used by
+    `--only-new`, so a run fetches and reports only vacancies posted since the
+    previous runs. An id stopped short (budget, error) is retried next run."""
+    ids: set[str] = set()
+    for f in SEARCHES.glob(f"*/*_{platform}.json"):
+        try:
+            ids.update(str(r.get("source_id")) for r in json.loads(f.read_text("utf-8")).get("records", [])
+                       if r.get("description_complete"))
+        except (ValueError, OSError):
+            continue
+    return ids
 
 
 class RunLog:

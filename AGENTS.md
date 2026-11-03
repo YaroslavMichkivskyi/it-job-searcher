@@ -68,10 +68,17 @@ python daemons/it-job-searcher/scripts/linkedin.py --years N --keyword "Node.js 
   (DOU / Djinni 4–9 s, LinkedIn 8–20 s), a longer pause every 10–15 requests,
   strictly sequential.
 - Daily budgets: DOU 300, Djinni 200 requests, LinkedIn 60 page loads; at least
-  30 min between DOU / Djinni runs, 2 h between LinkedIn runs.
+  30 min between DOU runs, 5 min between Djinni runs, 2 h between LinkedIn runs.
 - 403 / 429 / captcha / anti-bot page → the run stops; that is final for this run.
 - Fetched vacancy pages are cached (`--cache-days`, default 7).
 - `--ignore-gap` only on the user's explicit request.
+- `--only-new` (all collectors): ids already fully collected in any earlier `<platform>.json`
+  under `JOB_SEARCH_DIR` are skipped — no detail fetch, not in the report; DOU/Djinni stop
+  paging at a page with nothing new. Use it for repeat runs; a full run without it now and then.
+  DOU with `--only-new` reads one unfiltered listing per category (no per-experience
+  buckets) — the analyzer judges experience from the text. LinkedIn with `--only-new`
+  also retries ids listed in the last 7 days but never opened (fresh ids first); pair it
+  with `--date-posted auto` (past_24_hours if the last run ended < 23.5 h ago, else past_week).
 - DOU / Djinni: public pages only, no login, only `/vacancies/` and `/jobs/`
   (allowed by their `robots.txt`). LinkedIn: only `search_jobs` and
   `get_job_details` — nothing is sent, saved or applied for.

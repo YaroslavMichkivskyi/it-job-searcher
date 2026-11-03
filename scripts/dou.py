@@ -21,7 +21,7 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # find common.py from any cwd
-from common import (Cache, PoliteClient, Stop, clean, exp_range, html_to_text, inner_html,
+from common import (Cache, PoliteClient, Stop, clean, exp_range, html_to_text, inner_html, seen_ids,
                     parse_salary, parse_ua_date, record, run_collector)
 
 BASE = "https://jobs.dou.ua/vacancies/"
@@ -69,7 +69,10 @@ def parse_items(fragment: str) -> list[dict]:
     return items
 
 
-def list_vacancies(client: PoliteClient, params: dict, remote: bool, max_pages: int, log) -> list[dict]:
+def list_vacancies(client: PoliteClient, params: dict, remote: bool, max_pages: int, log,
+                   seen: set[str] | None = None) -> list[dict]:
+    """All listing pages for `params`. With `seen` (``--only-new``) paging stops at
+    the first page that holds nothing new — DOU lists the newest vacancies first."""
     qs = query_string(params, remote)
     url = f"{BASE}?{qs}"
     page = client.request(url)
@@ -82,8 +85,10 @@ def list_vacancies(client: PoliteClient, params: dict, remote: bool, max_pages: 
         raise Stop(f"DOU shows {total} vacancies but none were parsed — markup changed? {url}")
     log(f"listing {params}{' remote' if remote else ''}: {total} on site, page 1 → {len(found)}")
     csrf = re.search(r"CSRF_TOKEN\s*=\s*['\"]([^'\"]+)", page)
-    pages = 1
-    while len(found) < total and pages < max_pages and csrf:
+    pages, stopped_on_seen = 1, False
+    if seen is not None and found and all(it["source_id"] in seen for it in found):
+        stopped_on_seen = True
+    while len(found) < total and pages < max_pages and csrf and not stopped_on_seen:
         chunk = json.loads(client.request(
             f"{BASE}xhr-load/?{qs}",
             data={"csrfmiddlewaretoken": csrf.group(1), "count": len(found)},
@@ -96,7 +101,11 @@ def list_vacancies(client: PoliteClient, params: dict, remote: bool, max_pages: 
         pages += 1
         if chunk.get("last"):
             break
-    if len(found) < total:
+        if seen is not None and all(it["source_id"] in seen for it in more):
+            stopped_on_seen = True
+    if stopped_on_seen:
+        log(f"{params}: stopped paging — the rest was collected in earlier runs")
+    elif len(found) < total:
         log.warn(f"{params}: collected {len(found)} of {total} on site"
                  + (f" (max-pages {max_pages} reached)" if pages >= max_pages else ""))
     return found
@@ -142,6 +151,8 @@ def main() -> int:
     ap.add_argument("--max-details", type=int, default=200, help="max vacancy pages to open (default 200)")
     ap.add_argument("--cache-days", type=float, default=7, help="reuse fetched vacancy pages this long (default 7)")
     ap.add_argument("--ignore-gap", action="store_true", help="skip the pause-between-runs check (only on the user's request)")
+    ap.add_argument("--only-new", action="store_true",
+                    help="skip vacancies already collected in earlier sessions (no page fetch, not in the report)")
     args = ap.parse_args()
 
     buckets = buckets_for(args.years, args.max_exp)
@@ -152,8 +163,15 @@ def main() -> int:
     def collect(budget, log, records):
         client, cache = PoliteClient("dou", budget, log), Cache("dou", args.cache_days)
         base = {k: v for k, v in (("search", args.search), ("city", args.city)) if v}
+        seen = seen_ids("dou") if args.only_new else None
+        if seen is not None:
+            log(f"only-new: {len(seen)} DOU vacancies known from earlier sessions")
+        skipped = set()
 
         def add(it, category, label):
+            if seen is not None and it["source_id"] in seen:
+                skipped.add(it["source_id"])
+                return
             rec = records.get(it["source_id"])
             if rec:
                 rec["notes"] = f"{rec['notes']}; also {category} {label}"
@@ -170,19 +188,26 @@ def main() -> int:
             )
 
         for category in args.category:
+            if seen is not None:
+                # only-new: one unfiltered listing per category (newest first, paging stops at
+                # known ids); the few new ones are opened and the analyzer checks experience
+                # from the text — no per-bucket listings, ~15 requests fewer per run
+                for it in list_vacancies(client, {"category": category, **base}, args.remote, args.max_pages, log, seen):
+                    add(it, category, "only-new, опыт по тексту")
+                continue
             seen_in_buckets: set[str] = set()
             for bucket in BUCKETS:  # every bucket, so the no-filter pass can tell "unspecified" apart
                 items = list_vacancies(client, {"category": category, "exp": bucket, **base},
-                                       args.remote, args.max_pages, log) if (bucket in buckets or not args.no_unspecified) else []
+                                       args.remote, args.max_pages, log, seen) if (bucket in buckets or not args.no_unspecified) else []
                 for it in items:
                     seen_in_buckets.add(it["source_id"])
                     if bucket in buckets:
                         add(it, category, f"{bucket} р.")
             if not args.no_unspecified:
-                for it in list_vacancies(client, {"category": category, **base}, args.remote, args.max_pages, log):
+                for it in list_vacancies(client, {"category": category, **base}, args.remote, args.max_pages, log, seen):
                     if it["source_id"] not in seen_in_buckets:
                         add(it, category, "опыт не указан")
-        log(f"listed {len(records)} unique vacancies")
+        log(f"listed {len(records)} unique vacancies" + (f" ({len(skipped)} known ones skipped)" if seen is not None else ""))
         for n, rec in enumerate(records.values()):
             if n >= args.max_details:
                 log.warn(f"max-details {args.max_details} reached; {len(records) - n} keep the listing summary")
