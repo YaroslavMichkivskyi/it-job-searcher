@@ -47,7 +47,7 @@ POLICY = {
     # LinkedIn runs on the user's logged-in account: the strictest limits,
     # the account is what gets restricted. Counted in page loads.
     "linkedin": dict(delay=(8.0, 20.0), breather_every=10, breather=(45.0, 90.0),
-                     daily_requests=60, min_gap_minutes=120),
+                     daily_requests=80, min_gap_minutes=120),
 }
 LOCK_STALE_HOURS = 3
 
@@ -459,20 +459,41 @@ def session_dir(out: str | None, label: str) -> Path:
     return path
 
 
-def pending_ids(platform: str, days: float = 7) -> set[str]:
-    """Ids of `platform` listed in a session of the last `days` days but never
-    fetched in full (detail budget ran out) — `--only-new` retries them directly,
-    so a narrow date filter doesn't lose yesterday's backlog."""
-    cutoff, done, pending = time.time() - days * 86400, seen_ids(platform), set()
+def pending_ids(platform: str, days: float = 7) -> dict[str, str | None]:
+    """Ids of `platform` (→ title) listed in a session of the last `days` days but
+    never fetched in full (detail budget ran out) — `--only-new` retries them
+    directly, so a narrow date filter doesn't lose yesterday's backlog."""
+    cutoff, done, pending = time.time() - days * 86400, seen_ids(platform), {}
     for f in SEARCHES.glob(f"*/*_{platform}.json"):
         if f.stat().st_mtime < cutoff:
             continue
         try:
-            pending.update(str(r.get("source_id")) for r in json.loads(f.read_text("utf-8")).get("records", [])
-                           if not r.get("description_complete"))
+            for r in json.loads(f.read_text("utf-8")).get("records", []):
+                if not r.get("description_complete") and str(r.get("source_id")) not in done:
+                    pending[str(r.get("source_id"))] = pending.get(str(r.get("source_id"))) or r.get("title")
         except (ValueError, OSError):
             continue
-    return pending - done
+    return pending
+
+
+def add_title_filters(ap) -> None:
+    """`--skip-title` / `--later-title` — regexes the caller passes from its criteria."""
+    ap.add_argument("--skip-title", action="append", default=[], metavar="REGEX",
+                    help="case-insensitive regex: a vacancy whose title matches is not opened and not "
+                         "reported (logged in .log), repeatable")
+    ap.add_argument("--later-title", action="append", default=[], metavar="REGEX",
+                    help="case-insensitive regex: such vacancies are opened only after all others "
+                         "(matters when the detail budget is short), repeatable")
+
+
+def title_rank(title: str | None, args) -> int | None:
+    """None — skip by `--skip-title`; 1 — open later (`--later-title`); 0 — normal.
+    An unknown title is never skipped."""
+    if not title:
+        return 0
+    if any(re.search(p, title, re.I) for p in args.skip_title):
+        return None
+    return 1 if any(re.search(p, title, re.I) for p in args.later_title) else 0
 
 
 def seen_ids(platform: str) -> set[str]:

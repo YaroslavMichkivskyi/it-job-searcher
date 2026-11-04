@@ -26,8 +26,8 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # find common.py from any cwd
-from common import (REPO, STATE, Budget, Cache, McpClient, Pacer, Stop, exp_range, parse_salary, pending_ids,
-                    record, run_collector, seen_ids)
+from common import (REPO, STATE, Budget, Cache, McpClient, Pacer, Stop, add_title_filters, exp_range, parse_salary,
+                    pending_ids, record, run_collector, seen_ids, title_rank)
 
 # `experience_level` values of the server's `search_jobs`, by years of experience.
 LEVELS = [((0, 1), ["internship", "entry"]), ((1, 3), ["entry", "associate"]),
@@ -105,7 +105,9 @@ def main() -> int:
     ap.add_argument("--date-posted", choices=("auto", "past_24_hours", "past_week", "past_month"), default="past_month",
                     help="auto: past_24_hours if the last LinkedIn run ended < 23.5 h ago, else past_week")
     ap.add_argument("--pages-per-keyword", type=int, default=2, help="search result pages per phrase (default 2)")
-    ap.add_argument("--max-details", type=int, default=35, help="max job pages to open (default 35)")
+    ap.add_argument("--keyword-pages", action="append", default=[], metavar="PHRASE=N",
+                    help="pages for one phrase, overrides --pages-per-keyword, repeatable")
+    ap.add_argument("--max-details", type=int, default=60, help="max job pages to open (default 60)")
     ap.add_argument("--cache-days", type=float, default=7)
     ap.add_argument("--server-cmd", help="command that starts the LinkedIn MCP server")
     ap.add_argument("--out", help="session folder (default <JOB_SEARCH_DIR>/<date>-linkedin)")
@@ -113,11 +115,18 @@ def main() -> int:
     ap.add_argument("--ignore-gap", action="store_true", help="skip the pause-between-runs check (only on the user's request)")
     ap.add_argument("--only-new", action="store_true",
                     help="skip vacancies already collected in earlier sessions (no detail call, not in the report)")
+    add_title_filters(ap)
     args = ap.parse_args()
 
     if args.date_posted == "auto":
         mins = Budget("linkedin").minutes_since_last_run()
         args.date_posted = "past_24_hours" if mins is not None and mins < 23.5 * 60 else "past_week"
+    kw_pages = {}
+    for item in args.keyword_pages:
+        phrase, _, n = item.rpartition("=")
+        if not phrase or not n.isdigit():
+            ap.error(f"--keyword-pages expects PHRASE=N, got {item!r}")
+        kw_pages[phrase] = int(n)
     levels = levels_for(args.years, args.max_exp)
     query = {"years": args.years, "experience_range": exp_range(args.years, args.max_exp), "experience_levels": levels,
              "keywords": args.keyword, "locations": args.location, "remote": args.remote,
@@ -127,13 +136,14 @@ def main() -> int:
         pacer, cache = Pacer("linkedin", log), Cache("linkedin", args.cache_days)
         client = McpClient(server_command(args.server_cmd), log)
         titles: dict[str, str] = {}
+        skipped: dict[str, str | None] = {}
         seen = seen_ids("linkedin") if args.only_new else None
         if seen is not None:
             log(f"only-new: {len(seen)} LinkedIn vacancies known from earlier sessions")
         try:
             searches = [(kw, loc) for kw in args.keyword for loc in (args.location or [None])]
             for kw, loc in searches:
-                pages = max(1, min(args.pages_per_keyword, 5))
+                pages = max(1, min(kw_pages.get(kw, args.pages_per_keyword), 5))
                 budget.spend(pages)
                 pacer.before(pages)
                 params = {"keywords": kw, "experience_level": ",".join(levels), "date_posted": args.date_posted,
@@ -166,20 +176,38 @@ def main() -> int:
                     log(f"'{kw}': {len(ids) - len(fresh)} known ones skipped, {len(fresh)} new")
                     ids = fresh
                 for i in ids:
+                    if i not in records and title_rank(titles.get(i), args) is None:
+                        skipped[i] = titles.get(i)
+                        continue
                     records.setdefault(i, record(platform="linkedin", source_id=i,
                                                  url=f"https://www.linkedin.com/jobs/view/{i}/",
                                                  title=titles.get(i), description_complete=False,
                                                  notes=f"search: {kw} @ {loc or '-'}"))
             if seen is not None:
-                backlog = sorted(pending_ids("linkedin") - set(records), reverse=True)  # newest ids first
+                pending = pending_ids("linkedin")
+                backlog = sorted((i for i in pending if i not in records and i not in skipped), reverse=True)
                 if backlog:
                     log(f"only-new: {len(backlog)} listed earlier but never opened — retried")
-                for i in backlog:
+                for i in backlog:  # newest ids first
+                    if title_rank(pending[i], args) is None:
+                        skipped[i] = pending[i]
+                        continue
                     records.setdefault(i, record(platform="linkedin", source_id=i,
-                                                 url=f"https://www.linkedin.com/jobs/view/{i}/",
+                                                 url=f"https://www.linkedin.com/jobs/view/{i}/", title=pending[i],
                                                  description_complete=False, notes="backlog from an earlier run"))
+            for i, t in skipped.items():
+                log(f"skip-title: {i} {t}")
+            if skipped:
+                log(f"skip-title: {len(skipped)} vacancies not opened by title")
+            # Detail order: normal titles first, then --later-title ones and repeats of a title
+            # already queued (one company reposting the same job under several ids).
+            queued, order = set(), {}
+            for n, (i, rec) in enumerate(records.items()):
+                norm = re.sub(r"\W+", " ", (rec.get("title") or "").lower()).strip()
+                order[i] = (title_rank(rec.get("title"), args) or (1 if norm and norm in queued else 0), n)
+                queued.add(norm)
             opened = 0
-            for i, rec in records.items():
+            for i, rec in sorted(records.items(), key=lambda kv: order[kv[0]]):
                 data = cache.get(i)
                 if not data:
                     if opened >= args.max_details:

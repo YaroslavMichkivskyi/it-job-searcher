@@ -67,7 +67,7 @@ python daemons/it-job-searcher/scripts/linkedin.py --years N --keyword "Node.js 
 - One run per platform at a time (lock file); jittered pauses between requests
   (DOU / Djinni 4–9 s, LinkedIn 8–20 s), a longer pause every 10–15 requests,
   strictly sequential.
-- Daily budgets: DOU 300, Djinni 200 requests, LinkedIn 60 page loads; at least
+- Daily budgets: DOU 300, Djinni 200 requests, LinkedIn 80 page loads; at least
   30 min between DOU runs, 5 min between Djinni runs, 2 h between LinkedIn runs.
 - 403 / 429 / captcha / anti-bot page → the run stops; that is final for this run.
 - Fetched vacancy pages are cached (`--cache-days`, default 7).
@@ -79,6 +79,12 @@ python daemons/it-job-searcher/scripts/linkedin.py --years N --keyword "Node.js 
   buckets) — the analyzer judges experience from the text. LinkedIn with `--only-new`
   also retries ids listed in the last 7 days but never opened (fresh ids first); pair it
   with `--date-posted auto` (past_24_hours if the last run ended < 23.5 h ago, else past_week).
+- `--skip-title REGEX` / `--later-title REGEX` (all collectors, repeatable, case-insensitive; the
+  caller passes them from its criteria): a matching title is not opened and not reported (logged
+  as `skip-title:` in `.log`) / is opened only after all others. Paging decisions ignore them, so
+  nothing behind a skipped vacancy is lost. LinkedIn also opens repeats of an already queued
+  title last. LinkedIn search shows titles only for the first ~10 cards of a page — the rest
+  are unknown until opened and are never skipped.
 - DOU / Djinni: public pages only, no login, only `/vacancies/` and `/jobs/`
   (allowed by their `robots.txt`). LinkedIn: only `search_jobs` and
   `get_job_details` — nothing is sent, saved or applied for.

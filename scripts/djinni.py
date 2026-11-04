@@ -19,7 +19,7 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # find common.py from any cwd
-from common import PoliteClient, Stop, clean, exp_range, record, run_collector, seen_ids
+from common import PoliteClient, Stop, add_title_filters, clean, exp_range, record, run_collector, seen_ids, title_rank
 
 BASE = "https://djinni.co/jobs/"
 PAGE_SIZE = 15
@@ -110,6 +110,7 @@ def main() -> int:
     ap.add_argument("--ignore-gap", action="store_true", help="skip the pause-between-runs check (only on the user's request)")
     ap.add_argument("--only-new", action="store_true",
                     help="skip vacancies already collected in earlier sessions; stop paging at a page with nothing new")
+    add_title_filters(ap)
     args = ap.parse_args()
 
     query = {"years": args.years, "experience_range": exp_range(args.years, args.max_exp),
@@ -136,6 +137,9 @@ def main() -> int:
             log(f"page {n}: {len(items)} vacancies")
             fresh = [it for it in items if seen is None or it["source_id"] not in seen]
             for it in fresh:
+                if it["source_id"] not in records and title_rank(it["title"], args) is None:
+                    log(f"skip-title: {it['source_id']} {it['title']}")
+                    continue
                 if it["source_id"] not in records:
                     records[it["source_id"]] = to_record(it)
             if seen is not None and items and not fresh:

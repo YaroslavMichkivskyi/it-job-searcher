@@ -21,8 +21,8 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # find common.py from any cwd
-from common import (Cache, PoliteClient, Stop, clean, exp_range, html_to_text, inner_html, seen_ids,
-                    parse_salary, parse_ua_date, record, run_collector)
+from common import (Cache, PoliteClient, Stop, add_title_filters, clean, exp_range, html_to_text, inner_html,
+                    parse_salary, parse_ua_date, record, run_collector, seen_ids, title_rank)
 
 BASE = "https://jobs.dou.ua/vacancies/"
 BUCKETS = {"0-1": (0, 1), "1-3": (1, 3), "3-5": (3, 5), "5plus": (5, 99)}
@@ -153,6 +153,7 @@ def main() -> int:
     ap.add_argument("--ignore-gap", action="store_true", help="skip the pause-between-runs check (only on the user's request)")
     ap.add_argument("--only-new", action="store_true",
                     help="skip vacancies already collected in earlier sessions (no page fetch, not in the report)")
+    add_title_filters(ap)
     args = ap.parse_args()
 
     buckets = buckets_for(args.years, args.max_exp)
@@ -166,11 +167,16 @@ def main() -> int:
         seen = seen_ids("dou") if args.only_new else None
         if seen is not None:
             log(f"only-new: {len(seen)} DOU vacancies known from earlier sessions")
-        skipped = set()
+        skipped, by_title = set(), set()
 
         def add(it, category, label):
             if seen is not None and it["source_id"] in seen:
                 skipped.add(it["source_id"])
+                return
+            if it["source_id"] not in records and title_rank(it["title"], args) is None:
+                if it["source_id"] not in by_title:
+                    log(f"skip-title: {it['source_id']} {it['title']}")
+                by_title.add(it["source_id"])
                 return
             rec = records.get(it["source_id"])
             if rec:
@@ -207,7 +213,8 @@ def main() -> int:
                 for it in list_vacancies(client, {"category": category, **base}, args.remote, args.max_pages, log, seen):
                     if it["source_id"] not in seen_in_buckets:
                         add(it, category, "опыт не указан")
-        log(f"listed {len(records)} unique vacancies" + (f" ({len(skipped)} known ones skipped)" if seen is not None else ""))
+        log(f"listed {len(records)} unique vacancies" + (f" ({len(skipped)} known ones skipped)" if seen is not None else "")
+            + (f", {len(by_title)} not opened by title" if by_title else ""))
         for n, rec in enumerate(records.values()):
             if n >= args.max_details:
                 log.warn(f"max-details {args.max_details} reached; {len(records) - n} keep the listing summary")
