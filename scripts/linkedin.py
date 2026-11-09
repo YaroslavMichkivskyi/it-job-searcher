@@ -59,6 +59,14 @@ def server_command(arg: str | None) -> list[str]:
     return ["uvx", "mcp-server-linkedin"]
 
 
+def card_title(text: str | None) -> str | None:
+    """Title from a search-result link, or None for the card's widget text
+    ("Is this information helpful? …") that shares the job's link."""
+    if not text or text.lower().startswith("is this information helpful"):
+        return None
+    return text
+
+
 def ago_to_date(text: str) -> str | None:
     m = re.search(r"(\d+)\s+(minute|hour|day|week|month|year)s?\s+ago", text)
     if not m:
@@ -159,8 +167,8 @@ def main() -> int:
                 ids = [str(i) for i in res.get("job_ids") or []]
                 for ref in (res.get("references") or {}).get("search_results", []):
                     m = re.search(r"/jobs/view/(\d+)", ref.get("url", ""))
-                    if m:
-                        titles.setdefault(m.group(1), ref.get("text"))
+                    if m and card_title(ref.get("text")):
+                        titles.setdefault(m.group(1), card_title(ref.get("text")))
                 total = (res.get("total") or {}).get("count")
                 log(f"search '{kw}' @ {loc or 'account country'}: {total} on site, {len(ids)} ids from {pages} page(s)")
                 if total and len(ids) < total:
@@ -189,6 +197,7 @@ def main() -> int:
                 if backlog:
                     log(f"only-new: {len(backlog)} listed earlier but never opened — retried")
                 for i in backlog:  # newest ids first
+                    pending[i] = card_title(pending[i])  # older reports may hold widget text
                     if title_rank(pending[i], args) is None:
                         skipped[i] = pending[i]
                         continue
@@ -209,14 +218,21 @@ def main() -> int:
             opened = 0
             for i, rec in sorted(records.items(), key=lambda kv: order[kv[0]]):
                 data = cache.get(i)
+                if data and not (data.get("sections") or {}).get("job_posting"):
+                    data = None  # a failed page load (timeout, network drop) cached by an older run
                 if not data:
                     if opened >= args.max_details:
                         continue
                     budget.spend(1)
                     pacer.before(1)
                     data = client.tool("get_job_details", {"job_id": i})
-                    cache.put(i, data)
                     opened += 1
+                    if (data.get("sections") or {}).get("job_posting"):
+                        cache.put(i, data)
+                    else:  # page didn't load (timeout, network drop): keep it out of the cache, retry next run
+                        errors = data.get("section_errors") or {}
+                        reason = next((e.get("error_type") for e in errors.values() if isinstance(e, dict)), None)
+                        log.warn(f"{i}: page not loaded ({reason or 'empty response'}) — not cached, retried next run")
                 job = parse_job(i, data)
                 notes = "; ".join(x for x in (rec["notes"], job.pop("notes")) if x)
                 rec.update({k: v for k, v in job.items() if v is not None})
