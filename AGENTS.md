@@ -65,7 +65,7 @@ python daemons/it-job-searcher/scripts/linkedin.py --years N --keyword "Node.js 
 ## Anti-ban rules (enforced by the scripts — never work around them)
 
 - One run per platform at a time (lock file); jittered pauses between requests
-  (DOU / Djinni 4–9 s, LinkedIn 8–20 s), a longer pause every 10–15 requests,
+  (DOU / Djinni 4–9 s, LinkedIn 8–12 s), a longer pause every 10–15 requests,
   strictly sequential.
 - Daily budgets: DOU 300, Djinni 200 requests, LinkedIn 80 page loads; at least
   30 min between DOU runs, 5 min between Djinni runs, 2 h between LinkedIn runs.
@@ -83,8 +83,10 @@ python daemons/it-job-searcher/scripts/linkedin.py --years N --keyword "Node.js 
   caller passes them from its criteria): a matching title is not opened and not reported (logged
   as `skip-title:` in `.log`) / is opened only after all others. Paging decisions ignore them, so
   nothing behind a skipped vacancy is lost. LinkedIn also opens repeats of an already queued
-  title last. LinkedIn search shows titles only for the first ~10 cards of a page — the rest
-  are unknown until opened and are never skipped.
+  title last. LinkedIn result links carry no title (since ~2026-11), so titles are read from the
+  page text ("title / company / location (Remote|Hybrid|On-site)" cards) and matched to ids by
+  order — only when the card count equals the id count; otherwise those ids stay untitled, are
+  never skipped and the run logs "not matched".
 - DOU / Djinni: public pages only, no login, only `/vacancies/` and `/jobs/`
   (allowed by their `robots.txt`). LinkedIn: only `search_jobs` and
   `get_job_details` — nothing is sent, saved or applied for.

@@ -67,6 +67,28 @@ def card_title(text: str | None) -> str | None:
     return text
 
 
+_CARD_LOCATION = re.compile(r"\((Remote|Hybrid|On-site)\)$")
+
+
+def text_titles(text: str | None) -> list[str]:
+    """Card titles, in page order, from the search page's visible text.
+
+    LinkedIn's result links no longer carry the title, but every card reads
+    "<title> / <company> / <location (Remote|Hybrid|On-site)>". A title that
+    itself ends in "(Remote)" also matches the pattern, so a line repeated
+    next to itself or following the "Be an early applicant" badge is not a card."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    out = []
+    for i, ln in enumerate(lines):
+        if i < 2 or not _CARD_LOCATION.search(ln):
+            continue
+        nxt = lines[i + 1] if i + 1 < len(lines) else None
+        if ln in (nxt, lines[i - 1]) or lines[i - 1].lower() == "be an early applicant":
+            continue
+        out.append(re.sub(r"\s*\(Verified job\)$", "", lines[i - 2]).removeprefix("Selected, ").strip())
+    return out
+
+
 def ago_to_date(text: str) -> str | None:
     m = re.search(r"(\d+)\s+(minute|hour|day|week|month|year)s?\s+ago", text)
     if not m:
@@ -169,6 +191,15 @@ def main() -> int:
                     m = re.search(r"/jobs/view/(\d+)", ref.get("url", ""))
                     if m and card_title(ref.get("text")):
                         titles.setdefault(m.group(1), card_title(ref.get("text")))
+                # Links without titles → read them from the page text, matched by order; only when the
+                # card count equals the id count, otherwise a shifted list would mislabel vacancies.
+                if any(i not in titles for i in ids):
+                    from_text = text_titles((res.get("sections") or {}).get("search_results"))
+                    if len(from_text) == len(ids):
+                        for i, t in zip(ids, from_text):
+                            titles.setdefault(i, t)
+                    else:
+                        log(f"'{kw}': {len(from_text)} card titles in page text vs {len(ids)} ids — not matched")
                 total = (res.get("total") or {}).get("count")
                 log(f"search '{kw}' @ {loc or 'account country'}: {total} on site, {len(ids)} ids from {pages} page(s)")
                 if total and len(ids) < total:

@@ -46,7 +46,8 @@ POLICY = {
                    daily_requests=200, min_gap_minutes=5),
     # LinkedIn runs on the user's logged-in account: the strictest limits,
     # the account is what gets restricted. Counted in page loads.
-    "linkedin": dict(delay=(8.0, 20.0), breather_every=10, breather=(45.0, 90.0),
+    # delay 8–12 s (avg ~10) at the owner's request 2026-11-13 (was 8–20).
+    "linkedin": dict(delay=(8.0, 12.0), breather_every=10, breather=(45.0, 90.0),
                      daily_requests=80, min_gap_minutes=120),
 }
 LOCK_STALE_HOURS = 3
