@@ -84,7 +84,8 @@ python daemons/it-job-searcher/scripts/linkedin.py --years N --keyword "Node.js 
   as `skip-title:` in `.log`) / is opened only after all others. Paging decisions ignore them, so
   nothing behind a skipped vacancy is lost. LinkedIn also opens repeats of an already queued
   title last. LinkedIn result links carry no title (since ~2026-11), so titles are read from the
-  page text ("title / company / location (Remote|Hybrid|On-site)" cards) and matched to ids by
+  page text (cards "title / company / location / badges…", parsed as a state machine that skips
+  known badges: Viewed, Posted…, Easy Apply, salary, alumni…) and matched to ids by
   order — only when the card count equals the id count; otherwise those ids stay untitled, are
   never skipped and the run logs "not matched".
 - DOU / Djinni: public pages only, no login, only `/vacancies/` and `/jobs/`

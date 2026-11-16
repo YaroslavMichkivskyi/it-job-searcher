@@ -67,25 +67,49 @@ def card_title(text: str | None) -> str | None:
     return text
 
 
-_CARD_LOCATION = re.compile(r"\((Remote|Hybrid|On-site)\)$")
+# Page chrome before the first card ("99+ results", the location, ranking links).
+_HEADER = re.compile(r"^(\d[\d,]*\+? results?|how promoted jobs are ranked|how ai search works|·)$", re.I)
+# Everything that can follow "<title> / <company> / <location>" inside one card.
+_CARD_TAIL = re.compile(
+    r"^(·|viewed|applied|saved|promoted|easy apply|be an early applicant|actively reviewing applicants"
+    r"|top applicant.*|reposted .*|posted .*|\d+ (second|minute|hour|day|week|month|year)s? ago"
+    r"|.* (alumni|connections?|employees?) works? here|.*\bapplicants?\b.*|response insights.*"
+    r"|.*\d[\d.,]*k?\s*(\$|€|£)?\s*([a-z]{3})?\s*/\s*(yr|year|mo|month|hr|hour|day|wk|week)\b.*"
+    r"|[$€£]\s?\d.*|\d[\d.,]*k?\s+[a-z]{3}\b.*)$", re.I)
+_FOOTER = re.compile(r"^(are these results helpful\?|no matching jobs found\.?)$", re.I)
+
+
+def _clean_title(line: str) -> str:
+    return re.sub(r"\s*\(Verified job\)$", "", line.removeprefix("Selected, ")).strip()
 
 
 def text_titles(text: str | None) -> list[str]:
     """Card titles, in page order, from the search page's visible text.
 
-    LinkedIn's result links no longer carry the title, but every card reads
-    "<title> / <company> / <location (Remote|Hybrid|On-site)>". A title that
-    itself ends in "(Remote)" also matches the pattern, so a line repeated
-    next to itself or following the "Be an early applicant" badge is not a card."""
+    LinkedIn's result links no longer carry the title. Every card reads
+    "<title> [<title> repeated without '(Verified job)'] / <company> / <location>"
+    followed by badges (Viewed, Posted 2 days ago, Easy Apply, salary, alumni…).
+    Parsed as a state machine: skip the page header, then title → company →
+    location → badges until the next unknown line, which starts the next card.
+    An unknown badge breaks the count, and the caller then refuses the match."""
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    i = 0
+    for j, ln in enumerate(lines[:12]):
+        if _HEADER.match(ln):
+            i = j + 1
     out = []
-    for i, ln in enumerate(lines):
-        if i < 2 or not _CARD_LOCATION.search(ln):
+    while i < len(lines):
+        if _FOOTER.match(lines[i]):
+            break
+        if _CARD_TAIL.match(lines[i]):
+            i += 1
             continue
-        nxt = lines[i + 1] if i + 1 < len(lines) else None
-        if ln in (nxt, lines[i - 1]) or lines[i - 1].lower() == "be an early applicant":
-            continue
-        out.append(re.sub(r"\s*\(Verified job\)$", "", lines[i - 2]).removeprefix("Selected, ").strip())
+        title = _clean_title(lines[i])
+        i += 1
+        if i < len(lines) and _clean_title(lines[i]) == title:
+            i += 1  # the same title repeated (verified-job badge variant)
+        i += 2  # company, location
+        out.append(title)
     return out
 
 
