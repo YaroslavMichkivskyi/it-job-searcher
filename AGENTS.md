@@ -87,7 +87,9 @@ python daemons/it-job-searcher/scripts/linkedin.py --years N --keyword "Node.js 
   page text (cards "title / company / location / badges…", parsed as a state machine that skips
   known badges: Viewed, Posted…, Easy Apply, salary, alumni…) and matched to ids by
   order — only when the card count equals the id count; otherwise those ids stay untitled, are
-  never skipped and the run logs "not matched".
+  never skipped and the run logs "not matched". `--skip-viewed` (LinkedIn): ids whose card carries a
+  "Viewed" / "Applied" badge (the account already opened them) are not opened and not reported;
+  needs the same one-to-one card match.
 - DOU / Djinni: public pages only, no login, only `/vacancies/` and `/jobs/`
   (allowed by their `robots.txt`). LinkedIn: only `search_jobs` and
   `get_job_details` — nothing is sent, saved or applied for.

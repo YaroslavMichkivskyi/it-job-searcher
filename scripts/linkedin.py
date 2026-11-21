@@ -61,10 +61,13 @@ def server_command(arg: str | None) -> list[str]:
 
 def card_title(text: str | None) -> str | None:
     """Title from a search-result link, or None for the card's widget text
-    ("Is this information helpful? …") that shares the job's link."""
-    if not text or text.lower().startswith("is this information helpful"):
+    ("Is this information helpful? …", "Share negative feedback" — 2026-11-20) that shares the job's link."""
+    if not text or _WIDGET_TEXT.match(text.strip()):
         return None
     return text
+
+
+_WIDGET_TEXT = re.compile(r"^(is this information helpful|share (negative|positive) feedback|dismiss\b)", re.I)
 
 
 # Page chrome before the first card ("99+ results", the location, ranking links).
@@ -76,6 +79,8 @@ _CARD_TAIL = re.compile(
     r"|.* (alumni|connections?|employees?) works? here|.*\bapplicants?\b.*|response insights.*"
     r"|.*\d[\d.,]*k?\s*(\$|€|£)?\s*([a-z]{3})?\s*/\s*(yr|year|mo|month|hr|hour|day|wk|week)\b.*"
     r"|[$€£]\s?\d.*|\d[\d.,]*k?\s+[a-z]{3}\b.*)$", re.I)
+# Separator LinkedIn inserts between exact and related results (2026-11-18), not a card.
+_SEPARATOR = re.compile(r"^we found more results related to your search\b.*$", re.I)
 _FOOTER = re.compile(r"^(are these results helpful\?|no matching jobs found\.?)$", re.I)
 
 
@@ -84,7 +89,15 @@ def _clean_title(line: str) -> str:
 
 
 def text_titles(text: str | None) -> list[str]:
-    """Card titles, in page order, from the search page's visible text.
+    return [c["title"] for c in text_cards(text)]
+
+
+_SEEN_BADGE = re.compile(r"^(viewed|applied)$", re.I)
+
+
+def text_cards(text: str | None) -> list[dict]:
+    """Cards {title, seen}, in page order, from the search page's visible text;
+    seen = the card carries a "Viewed" / "Applied" badge (I opened it on LinkedIn).
 
     LinkedIn's result links no longer carry the title. Every card reads
     "<title> [<title> repeated without '(Verified job)'] / <company> / <location>"
@@ -101,7 +114,12 @@ def text_titles(text: str | None) -> list[str]:
     while i < len(lines):
         if _FOOTER.match(lines[i]):
             break
+        if _SEPARATOR.match(lines[i]):
+            i += 1
+            continue
         if _CARD_TAIL.match(lines[i]):
+            if out and _SEEN_BADGE.match(lines[i]):
+                out[-1]["seen"] = True
             i += 1
             continue
         title = _clean_title(lines[i])
@@ -109,7 +127,7 @@ def text_titles(text: str | None) -> list[str]:
         if i < len(lines) and _clean_title(lines[i]) == title:
             i += 1  # the same title repeated (verified-job badge variant)
         i += 2  # company, location
-        out.append(title)
+        out.append({"title": title, "seen": False})
     return out
 
 
@@ -169,6 +187,9 @@ def main() -> int:
     ap.add_argument("--ignore-gap", action="store_true", help="skip the pause-between-runs check (only on the user's request)")
     ap.add_argument("--only-new", action="store_true",
                     help="skip vacancies already collected in earlier sessions (no detail call, not in the report)")
+    ap.add_argument("--skip-viewed", action="store_true",
+                    help="don't open vacancies whose search card says Viewed / Applied (works only when the "
+                         "cards in the page text match the ids one to one)")
     add_title_filters(ap)
     args = ap.parse_args()
 
@@ -191,6 +212,7 @@ def main() -> int:
         client = McpClient(server_command(args.server_cmd), log)
         titles: dict[str, str] = {}
         skipped: dict[str, str | None] = {}
+        seen_on_site: dict[str, str] = {}  # ids whose card says Viewed / Applied
         seen = seen_ids("linkedin") if args.only_new else None
         if seen is not None:
             log(f"only-new: {len(seen)} LinkedIn vacancies known from earlier sessions")
@@ -209,7 +231,11 @@ def main() -> int:
                 res = client.tool("search_jobs", params)
                 debug = STATE / "debug"
                 debug.mkdir(parents=True, exist_ok=True)
-                (debug / "linkedin-last-search.json").write_text(json.dumps(res, ensure_ascii=False, indent=1), "utf-8")
+                dump = json.dumps(res, ensure_ascii=False, indent=1)
+                (debug / "linkedin-last-search.json").write_text(dump, "utf-8")
+                # one dump per phrase too, so a "not matched" search can be inspected after the run
+                slug = re.sub(r"\W+", "-", kw.lower()).strip("-")
+                (debug / f"linkedin-search-{slug}.json").write_text(dump, "utf-8")
                 ids = [str(i) for i in res.get("job_ids") or []]
                 for ref in (res.get("references") or {}).get("search_results", []):
                     m = re.search(r"/jobs/view/(\d+)", ref.get("url", ""))
@@ -217,13 +243,14 @@ def main() -> int:
                         titles.setdefault(m.group(1), card_title(ref.get("text")))
                 # Links without titles → read them from the page text, matched by order; only when the
                 # card count equals the id count, otherwise a shifted list would mislabel vacancies.
-                if any(i not in titles for i in ids):
-                    from_text = text_titles((res.get("sections") or {}).get("search_results"))
-                    if len(from_text) == len(ids):
-                        for i, t in zip(ids, from_text):
-                            titles.setdefault(i, t)
-                    else:
-                        log(f"'{kw}': {len(from_text)} card titles in page text vs {len(ids)} ids — not matched")
+                cards = text_cards((res.get("sections") or {}).get("search_results"))
+                if len(cards) == len(ids):
+                    for i, c in zip(ids, cards):
+                        titles.setdefault(i, c["title"])
+                        if c["seen"]:
+                            seen_on_site[i] = c["title"]
+                elif any(i not in titles for i in ids) or args.skip_viewed:
+                    log(f"'{kw}': {len(cards)} cards in page text vs {len(ids)} ids — not matched")
                 total = (res.get("total") or {}).get("count")
                 log(f"search '{kw}' @ {loc or 'account country'}: {total} on site, {len(ids)} ids from {pages} page(s)")
                 if total and len(ids) < total:
@@ -238,6 +265,11 @@ def main() -> int:
                     fresh = [i for i in ids if i not in seen]
                     log(f"'{kw}': {len(ids) - len(fresh)} known ones skipped, {len(fresh)} new")
                     ids = fresh
+                if args.skip_viewed:
+                    viewed = [i for i in ids if i in seen_on_site and i not in records]
+                    if viewed:
+                        log(f"'{kw}': {len(viewed)} marked Viewed / Applied on LinkedIn — not opened")
+                    ids = [i for i in ids if i not in viewed]
                 for i in ids:
                     if i not in records and title_rank(titles.get(i), args) is None:
                         skipped[i] = titles.get(i)
